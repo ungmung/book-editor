@@ -64,6 +64,10 @@ code { background: var(--bg); padding: 0 4px; border-radius: 4px; }
 .book-title { font-size: 17px; font-weight: 700; border: 1px solid transparent !important; background: transparent !important; min-width: 0; flex: 1 1 180px; max-width: 360px; }
 .book-title:hover, .book-title:focus { border-color: var(--line) !important; }
 .save-state { color: var(--muted); font-size: 13px; }
+.save-state.file { color: var(--ink); }
+.file-box { background: var(--bg); border-radius: var(--radius); padding: 10px 12px; margin: 10px 0; }
+.file-box b { word-break: break-all; }
+.file-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
 .save-state.err { color: var(--err); font-weight: 700; }
 .top-actions { display: flex; gap: 6px; margin-left: auto; flex-wrap: wrap; }
 

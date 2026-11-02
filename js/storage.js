@@ -63,6 +63,18 @@
         return Promise.resolve();
       } catch (e) { return Promise.reject(e); }
     },
+    // 원고 파일 연결 정보 등 작은 값 저장 (IndexedDB에만)
+    get: function (key) { return idbGet(key).catch(function () { return null; }); },
+    set: function (key, val) { return idbSet(key, val); },
+    del: function (key) {
+      return openDb().then(function (db) {
+        return new Promise(function (resolve) {
+          var tx = db.transaction(STORE, 'readwrite');
+          tx.objectStore(STORE).delete(key);
+          tx.oncomplete = tx.onerror = function () { resolve(); };
+        });
+      }).catch(function () {});
+    },
     // 브라우저가 공간이 부족할 때 원고를 지우지 않도록 '영구 저장'을 요청
     persist: function () {
       if (navigator.storage && navigator.storage.persist) return navigator.storage.persist().catch(function () { return false; });

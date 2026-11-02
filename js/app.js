@@ -44,8 +44,10 @@
   function memos() { return state.chapters.filter(function (c) { return c.kind === 'memo'; }); }
 
   // ── 저장 ──
-  function markDirty() {
+  // onlyNav: 장을 옮겨 다니기만 한 경우(내용은 그대로) — '마지막 수정 시각'은 바꾸지 않음
+  function markDirty(onlyNav) {
     dirty = true;
+    if (onlyNav !== true) state.savedAt = Date.now();
     $('#saveState').textContent = '저장 중…';
     $('#saveState').classList.remove('err');
     clearTimeout(saveTimer);
@@ -56,8 +58,8 @@
     if (!dirty) return Promise.resolve();
     dirty = false;
     return BookStorage.save(state).then(function () {
-      var t = new Date();
-      $('#saveState').textContent = '자동 저장됨 · ' + t.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' });
+      if (FileSync.handle && fileOk) scheduleFileWrite();
+      else setSaveState('자동 저장됨(브라우저) · ' + hhmm());
     }).catch(function (e) {
       dirty = true;
       $('#saveState').textContent = '저장 실패!';
@@ -65,9 +67,171 @@
       showBanner('브라우저에 저장하지 못했어요(' + (e && e.message || e) + '). 원고를 잃지 않도록 지금 <b>내보내기</b>로 파일을 받아 두세요.', true);
     });
   }
-  window.addEventListener('pagehide', saveNow);
-  document.addEventListener('visibilitychange', function () { if (document.hidden) saveNow(); });
-  window.addEventListener('beforeunload', function (e) { if (dirty) { saveNow(); e.preventDefault(); e.returnValue = ''; } });
+  function flushAll() { saveNow(); if (fileTimer) writeFileNow(); }
+  window.addEventListener('pagehide', flushAll);
+  document.addEventListener('visibilitychange', function () { if (document.hidden) flushAll(); });
+  window.addEventListener('beforeunload', function (e) {
+    if (dirty || fileTimer || fileWriting) { flushAll(); e.preventDefault(); e.returnValue = ''; }
+  });
+
+  function hhmm() { return new Date().toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' }); }
+  function setSaveState(text, kind) {
+    var el = $('#saveState');
+    el.textContent = text;
+    el.classList.toggle('err', kind === 'err');
+    el.classList.toggle('file', kind === 'file');
+  }
+
+  // ── 원고 파일에 저장 ──
+  var fileOk = false, fileTimer = null, fileWriting = null;
+  function scheduleFileWrite() {
+    clearTimeout(fileTimer);
+    setSaveState('📄 ' + FileSync.name + '에 저장 중…', 'file');
+    fileTimer = setTimeout(writeFileNow, 1200);
+  }
+  function writeFileNow(force) {
+    clearTimeout(fileTimer); fileTimer = null;
+    if (!FileSync.handle || (!fileOk && !force)) return Promise.resolve();
+    var snapshot = state;
+    fileWriting = (fileWriting || Promise.resolve()).then(function () {
+      return FileSync.write(snapshot, force);
+    }).then(function () {
+      fileOk = true;
+      setSaveState('📄 ' + FileSync.name + '에 저장됨 · ' + hhmm(), 'file');
+      $('#banner').hidden = true; // 내보내기 알림·오류 알림은 이제 필요 없음
+      renderFileDlg();
+    }).catch(function (e) {
+      fileOk = false;
+      if (e && e.code === 'CHANGED') {
+        setSaveState('📄 파일 저장 멈춤', 'err');
+        showBanner('원고 파일 <b>' + esc(FileSync.name) + '</b>이(가) 다른 곳(다른 컴퓨터나 프로그램)에서 바뀌었어요. 덮어쓰지 않고 저장을 멈췄어요. 원고는 이 브라우저에는 계속 저장돼요. ' +
+          '<button type="button" class="small" id="cfLoad">파일 내용 불러오기</button> <button type="button" class="small" id="cfWrite">이 화면 내용으로 덮어쓰기</button>', true);
+        $('#cfLoad').onclick = function () { loadFromFile(true); };
+        $('#cfWrite').onclick = function () {
+          if (!confirm('파일에 있는 내용을 지금 이 화면의 원고로 덮어쓸까요?\n파일 쪽에서 고친 내용은 사라져요.')) return;
+          $('#banner').hidden = true; writeFileNow(true);
+        };
+      } else {
+        setSaveState('📄 파일 저장 실패', 'err');
+        showBanner('원고 파일에 저장하지 못했어요(' + esc(e && (e.name === 'NotFoundError' ? '파일을 찾을 수 없음 — 옮기거나 지웠나요?' : e.message) || e) + '). 원고는 이 브라우저에는 저장돼 있어요. <b>원고 파일</b> 버튼에서 다시 연결해 주세요.', true);
+      }
+      renderFileDlg();
+    }).finally(function () { fileWriting = null; });
+    return fileWriting;
+  }
+  // 파일 내용을 읽어 화면에 넣기 (ask=true면 먼저 물어봄)
+  function loadFromFile(ask) {
+    return FileSync.read().then(function (r) {
+      if (!r.data) return writeFileNow(true);
+      if (ask && !confirm('원고 파일 내용으로 바꿀까요?\n지금 이 화면(브라우저)에 있는 원고는 파일 내용으로 대체돼요.')) return;
+      FileSync.lastModified = r.lastModified;
+      replaceState(r.data);
+      fileOk = true;
+      $('#banner').hidden = true;
+      setSaveState('📄 ' + FileSync.name + '에서 불러옴 · ' + hhmm(), 'file');
+      toast('원고 파일 내용을 불러왔어요.');
+    });
+  }
+  function replaceState(data) {
+    data = JSON.parse(JSON.stringify(data));
+    delete data.app; delete data.exported; delete data.format;
+    state = normalize(data);
+    dirty = true; saveNow();
+    boot();
+  }
+  // 연결된 파일과 브라우저 중 어느 쪽이 최신인지 확인
+  function syncWithFile() {
+    return FileSync.read().then(function (r) {
+      FileSync.lastModified = r.lastModified;
+      var fileTime = r.data && r.data.savedAt || 0, mine = state.savedAt || 0;
+      if (r.data && fileTime > mine + 2000) {
+        var when = new Date(fileTime).toLocaleString('ko-KR');
+        if (confirm('원고 파일 「' + FileSync.name + '」이(가) 이 브라우저보다 더 최신이에요(' + when + ' 저장).\n다른 컴퓨터에서 고친 것 같아요. 파일 내용으로 바꿀까요?\n\n[취소]를 누르면 파일 연결을 끊고 파일은 그대로 둬요.')) {
+          replaceState(r.data);
+          fileOk = true;
+          setSaveState('📄 ' + FileSync.name + '에서 불러옴 · ' + hhmm(), 'file');
+        } else {
+          return FileSync.disconnect().then(function () {
+            fileOk = false; setSaveState('이 브라우저에 자동 저장 중'); renderFileDlg();
+            toast('파일 연결을 끊었어요. 파일은 바뀌지 않았어요.', 5000);
+          });
+        }
+      } else {
+        fileOk = true;
+        return writeFileNow(true);
+      }
+      renderFileDlg();
+    }).catch(function (e) {
+      fileOk = false;
+      setSaveState('📄 파일 연결 안 됨', 'err');
+      showBanner('연결해 둔 원고 파일을 열지 못했어요(' + esc(e && (e.name === 'NotFoundError' ? '파일을 찾을 수 없음 — 옮기거나 지웠나요?' : e.message) || e) + '). <b>원고 파일</b> 버튼에서 다시 연결해 주세요.', true);
+      renderFileDlg();
+    });
+  }
+
+  function renderFileDlg() {
+    var box = $('#fileBody');
+    if (!box) return;
+    var btn = $('#fileBtn');
+    btn.classList.toggle('primary', !!(FileSync.handle && fileOk));
+    btn.textContent = FileSync.handle && fileOk ? '📄 ' + FileSync.name : '원고 파일';
+    if (!FileSync.supported) {
+      box.innerHTML = '<p>이 브라우저는 파일에 바로 저장하는 기능이 없어요. 이 기능은 <b>컴퓨터의 크롬·엣지</b>에서만 돼요(사파리·파이어폭스·휴대폰은 안 돼요).</p>' +
+        '<p>대신 <b>내보내기 → 전체 백업(.json)</b>으로 자주 파일을 받아 두세요. 그 파일을 나중에 크롬·엣지에서 ‘이미 있는 원고 파일 열기’로 열면 자동 저장을 이어 갈 수 있어요.</p>';
+      return;
+    }
+    if (FileSync.handle) {
+      box.innerHTML = '<div class="file-box">' + (fileOk ? '✅ ' : '⚠️ ') + '연결된 파일: <b>' + esc(FileSync.name) + '</b><br>' +
+        (fileOk ? '<span class="hint">쓰는 대로 이 파일에 자동 저장돼요. 브라우저에도 함께 저장돼요.</span>' : '<span class="hint">지금은 파일에 저장하지 않고 있어요. 다시 연결을 눌러 주세요.</span>') + '</div>' +
+        '<div class="file-actions">' + (fileOk ? '' : '<button type="button" class="primary" id="fsReconnect">다시 연결</button>') +
+        '<button type="button" id="fsDisconnect">연결 끊기</button></div>' +
+        '<p class="hint">브라우저 보안 때문에 사이트를 다시 열면 ‘파일 편집 허용’을 한 번 더 물어볼 수 있어요. 그때 허용을 누르면 돼요.</p>' +
+        '<p class="hint">파일이 어느 폴더에 있는지는 브라우저가 알려 주지 않아요. 만들 때 고른 폴더를 기억해 두세요.</p>';
+      if ($('#fsReconnect')) $('#fsReconnect').onclick = function () {
+        FileSync.reconnect().then(function (ok) {
+          if (!ok) { toast('허용하지 않아서 연결하지 못했어요.'); return; }
+          $('#banner').hidden = true;
+          return syncWithFile();
+        }).catch(fileError);
+      };
+      $('#fsDisconnect').onclick = function () {
+        if (!confirm('파일 연결을 끊을까요?\n파일은 지워지지 않고 그대로 남아요. 원고는 이 브라우저에 계속 저장돼요.')) return;
+        FileSync.disconnect().then(function () { fileOk = false; setSaveState('이 브라우저에 자동 저장 중'); renderFileDlg(); toast('연결을 끊었어요.'); });
+      };
+      return;
+    }
+    box.innerHTML = '<p>원고를 <b>내 컴퓨터의 파일 하나</b>에 쓰는 대로 자동 저장해요. 브라우저 기록을 지워도 원고가 파일로 남아요.</p>' +
+      '<p class="hint">💡 <b>구글 드라이브·원드라이브·드롭박스 폴더</b>에 만들면 그 프로그램이 무료로 백업하고 다른 컴퓨터와도 맞춰 줘요. 이 파일 하나에 모든 장·메모·표기 사전·설정이 들어 있어요.</p>' +
+      '<div class="file-actions"><button type="button" class="primary" id="fsCreate">새 원고 파일 만들기</button>' +
+      '<button type="button" id="fsOpen">이미 있는 원고 파일 열기</button></div>' +
+      '<p class="hint">‘새 원고 파일 만들기’는 지금 쓰고 있는 원고를 그대로 파일에 담아요. ‘열기’는 전에 만든 원고 파일(또는 전체 백업 파일)을 열어 이어서 써요.</p>';
+    $('#fsCreate').onclick = function () {
+      var name = (state.title || '내 원고').replace(/[\\/:*?"<>|]+/g, ' ').trim() + '-원고.json';
+      FileSync.create(name, state).then(function () {
+        fileOk = true; $('#banner').hidden = true;
+        setSaveState('📄 ' + FileSync.name + '에 저장됨 · ' + hhmm(), 'file');
+        renderFileDlg(); toast('원고 파일을 만들었어요. 이제 쓰는 대로 이 파일에 저장돼요.', 5000);
+      }).catch(fileError);
+    };
+    $('#fsOpen').onclick = function () {
+      FileSync.open().then(function (data) {
+        var hasText = state.chapters.some(function (c) { return c.text.trim(); });
+        if (!data) { fileOk = true; return writeFileNow(true); }
+        if (hasText && !confirm('「' + FileSync.name + '」의 원고로 바꿀까요?\n지금 이 화면(브라우저)에 있는 원고는 파일 내용으로 대체돼요.\n(필요하면 [취소] 후 먼저 내보내기를 해 두세요)')) {
+          return FileSync.disconnect().then(renderFileDlg);
+        }
+        replaceState(data);
+        fileOk = true; $('#banner').hidden = true;
+        setSaveState('📄 ' + FileSync.name + '에서 불러옴 · ' + hhmm(), 'file');
+        renderFileDlg(); toast('원고 파일을 열었어요. 이제 쓰는 대로 이 파일에 저장돼요.', 5000);
+      }).catch(fileError);
+    };
+  }
+  function fileError(e) {
+    if (e && e.name === 'AbortError') return; // 고르기 창을 닫음
+    alert('원고 파일을 다루지 못했어요.\n' + (e && e.message || e));
+    renderFileDlg();
+  }
 
   function showBanner(html, isErr) {
     var b = $('#banner');
@@ -120,7 +284,7 @@
     renderLists();
     runCheck();
     $('#editorScroll').scrollTop = 0;
-    markDirty();
+    markDirty(true);
   }
 
   $('#addChapter').onclick = function () {
@@ -644,11 +808,12 @@
     document.title = (state.title ? state.title + ' — ' : '') + '책 원고 교정기';
     openDoc(state.currentId);
     dirty = false;
-    $('#saveState').textContent = BookStorage.mode === 'indexeddb' ? '이 브라우저에 자동 저장 중' : '이 브라우저에 자동 저장 중(간이 저장소)';
+    if (!(FileSync.handle && fileOk)) setSaveState(BookStorage.mode === 'indexeddb' ? '이 브라우저에 자동 저장 중' : '이 브라우저에 자동 저장 중(간이 저장소)');
+    renderFileDlg();
     // 내보내기를 오래 안 했으면 알림
     var hasText = chapters().some(function (c) { return c.text.trim().length > 200; });
     var days = state.lastExport ? (Date.now() - state.lastExport) / 864e5 : Infinity;
-    if (hasText && days > 7) {
+    if (hasText && days > 7 && !(FileSync.handle && fileOk)) {
       showBanner('원고는 이 브라우저에만 저장돼 있어요. ' + (state.lastExport ? Math.floor(days) + '일 동안' : '아직 한 번도') + ' 파일로 내보내지 않았어요. <button type="button" class="small primary" id="bannerExport">지금 내보내기</button>');
       $('#bannerExport').onclick = function () { $('#exportDlg').showModal(); };
     }
@@ -660,8 +825,28 @@
     boot();
     if (!data) { saveNow(); $('#helpDlg').showModal(); }
     BookStorage.persist();
+    return FileSync.restore().then(function (perm) {
+      if (perm === 'granted') return syncWithFile();
+      if (perm === 'crashed') {
+        showBanner('지난번에 원고 파일을 다시 연결하다가 문제가 생겨서 이번에는 건너뛰었어요. 원고는 브라우저에 그대로 있어요. <b>원고 파일 → 이미 있는 원고 파일 열기</b>로 다시 연결해 주세요.', true);
+        renderFileDlg();
+        return;
+      }
+      if (perm === 'prompt') {
+        renderFileDlg();
+        $('#banner').hidden = true;
+        showBanner('원고 파일 <b>' + esc(FileSync.name) + '</b>에 계속 저장하려면 눌러 주세요. (브라우저 보안 때문에 다시 열 때마다 한 번 허용이 필요할 수 있어요) <button type="button" class="small primary" id="bannerReconnect">다시 연결</button>');
+        $('#bannerReconnect').onclick = function () {
+          FileSync.reconnect().then(function (ok) {
+            if (!ok) { toast('허용하지 않아서 연결하지 못했어요. 원고는 브라우저에 계속 저장돼요.'); return; }
+            $('#banner').hidden = true;
+            return syncWithFile();
+          }).catch(fileError);
+        };
+      }
+    });
   });
 
   // 시험용 (자동 테스트에서 사용)
-  window.__bookEditor = { get state() { return state; }, get issues() { return issues; }, runCheck: runCheck, saveNow: saveNow };
+  window.__bookEditor = { get state() { return state; }, get issues() { return issues; }, runCheck: runCheck, saveNow: saveNow, writeFileNow: writeFileNow, get fileOk() { return fileOk; } };
 })();

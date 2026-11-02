@@ -14,6 +14,7 @@
   <input id="bookTitle" class="book-title" type="text" placeholder="책 제목" aria-label="책 제목" autocomplete="off">
   <span id="saveState" class="save-state" aria-live="polite">불러오는 중…</span>
   <nav class="top-actions">
+    <button type="button" data-open="fileDlg" id="fileBtn">원고 파일</button>
     <button type="button" data-open="importDlg">불러오기</button>
     <button type="button" data-open="exportDlg">내보내기</button>
     <button type="button" data-open="dictDlg">표기 사전</button>
@@ -102,6 +103,15 @@
 </nav>
 
 <div id="toast" class="toast" role="status" hidden></div>
+
+<!-- 원고 파일 -->
+<dialog id="fileDlg">
+  <form method="dialog">
+    <h2>원고 파일에 자동 저장</h2>
+    <div id="fileBody"></div>
+    <div class="dlg-actions"><button value="close">닫기</button></div>
+  </form>
+</dialog>
 
 <!-- 불러오기 -->
 <dialog id="importDlg">
@@ -214,7 +224,7 @@
         </ul>
         맞는데 지적됐다면 <b>무시</b>를 누르세요. 같은 곳은 다시 지적하지 않아요.</li>
       <li><b>애매할 때</b> — 지적 카드의 <b>Claude에 물어보기</b>를 누르면 질문이 복사돼요. <a href="https://claude.ai/new" target="_blank" rel="noopener">claude.ai</a>에 붙여 넣으세요.</li>
-      <li><b>보관</b> — 원고는 이 브라우저에만 있어요. 브라우저 기록을 지우면 사라질 수 있으니 <b>내보내기</b>로 자주 파일을 받아 두세요.</li>
+      <li><b>보관</b> — 컴퓨터의 크롬·엣지라면 <b>원고 파일 → 새 원고 파일 만들기</b>를 한 번 해 두세요. 그다음부터는 쓰는 대로 그 파일에 자동 저장돼요. 구글 드라이브·원드라이브 폴더에 만들면 자동 백업까지 돼요. 다른 브라우저나 휴대폰에서는 원고가 그 브라우저에만 있으니 <b>내보내기</b>로 자주 파일을 받아 두세요.</li>
       <li><b>휴대폰 메모</b> — 휴대폰과 컴퓨터는 저장 공간이 따로예요. 휴대폰에서 쓴 메모는 <b>내보내기 → 텍스트</b>로 저장한 뒤, 컴퓨터에서 <b>불러오기 → 메모로 불러오기</b>로 옮기세요.</li>
     </ol>
     <p class="hint">이 도구는 규칙으로 흔한 실수를 찾을 뿐, 모든 오류를 잡지는 못해요. 잘못 고치는 것보다 놓치는 쪽을 택했어요. 출간 전에는 사람의 교정을 한 번 더 받는 것을 권해요.</p>
@@ -229,6 +239,7 @@
 <script src="js/stats.js"></script>
 <script src="js/storage.js"></script>
 <script src="js/docx.js"></script>
+<script src="js/filesync.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
