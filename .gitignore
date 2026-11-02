@@ -1,0 +1,16 @@
+# 원고 내용은 공개 저장소에 올리지 않는다
+*.docx
+*.doc
+*.hwp
+*.hwpx
+*.txt
+*.pdf
+*-백업.json
+*backup*.json
+manuscript/
+원고/
+
+# 테스트 결과물
+.e2e-out/
+node_modules/
+.DS_Store
