@@ -47,6 +47,7 @@
       <div class="editor-tools">
         <button type="button" id="runCheck" class="primary">점검하기</button>
         <button type="button" id="copySelection" title="선택한 부분을 claude.ai에 물어볼 수 있게 복사">선택 부분 질문용 복사</button>
+        <button type="button" id="openHistory" title="예전 버전을 보고 되돌리기">버전 기록</button>
         <span class="tool-group">
           <button type="button" id="moveUp" class="small" title="위로">▲</button>
           <button type="button" id="moveDown" class="small" title="아래로">▼</button>
@@ -103,6 +104,23 @@
 </nav>
 
 <div id="toast" class="toast" role="status" hidden></div>
+
+<!-- 버전 기록 -->
+<dialog id="historyDlg" class="wide history">
+  <form method="dialog">
+    <h2 tabindex="-1" autofocus>버전 기록</h2>
+    <p class="hint">원고 전체를 찍어 둔 기록이에요. 쓰는 동안 <b>30분마다</b>, <b>사이트를 열 때</b>, 장 삭제·되돌리기처럼 <b>크게 바뀌기 직전</b>에 저절로 남아요. 바뀐 게 없으면 남기지 않아요. 기록은 이 브라우저에만 보관돼요.</p>
+    <div class="history-save">
+      <input type="text" id="snapName" placeholder="이름 붙여 저장 (예: 출판사 보내기 전)" aria-label="버전 이름" maxlength="60">
+      <button type="button" id="snapNow" class="primary">지금 버전 저장</button>
+    </div>
+    <div class="history-grid">
+      <div id="snapList" class="snap-list" aria-label="기록 목록"></div>
+      <div id="snapDetail" class="snap-detail"></div>
+    </div>
+    <div class="dlg-actions"><button value="close">닫기</button></div>
+  </form>
+</dialog>
 
 <!-- 원고 파일 -->
 <dialog id="fileDlg">
@@ -223,6 +241,7 @@
           <li><span class="badge lv-style">참고</span> 틀린 건 아니지만 문장을 다듬을 때 참고할 점이에요.</li>
         </ul>
         맞는데 지적됐다면 <b>무시</b>를 누르세요. 같은 곳은 다시 지적하지 않아요.</li>
+      <li><b>버전 기록</b> — 원고는 30분마다, 그리고 장 삭제처럼 크게 바뀌기 직전마다 저절로 기록돼요. <b>버전 기록</b> 버튼에서 예전 글과 지금 글을 비교하고, 장 하나나 원고 전체를 그때로 되돌릴 수 있어요. 중요한 때는 <b>지금 버전 저장</b>으로 이름을 붙여 두세요.</li>
       <li><b>애매할 때</b> — 지적 카드의 <b>Claude에 물어보기</b>를 누르면 질문이 복사돼요. <a href="https://claude.ai/new" target="_blank" rel="noopener">claude.ai</a>에 붙여 넣으세요.</li>
       <li><b>보관</b> — 컴퓨터의 크롬·엣지라면 <b>원고 파일 → 새 원고 파일 만들기</b>를 한 번 해 두세요. 그다음부터는 쓰는 대로 그 파일에 자동 저장돼요. 구글 드라이브·원드라이브 폴더에 만들면 자동 백업까지 돼요. 다른 브라우저나 휴대폰에서는 원고가 그 브라우저에만 있으니 <b>내보내기</b>로 자주 파일을 받아 두세요.</li>
       <li><b>휴대폰 메모</b> — 휴대폰과 컴퓨터는 저장 공간이 따로예요. 휴대폰에서 쓴 메모는 <b>내보내기 → 텍스트</b>로 저장한 뒤, 컴퓨터에서 <b>불러오기 → 메모로 불러오기</b>로 옮기세요.</li>
@@ -240,6 +259,7 @@
 <script src="js/storage.js"></script>
 <script src="js/docx.js"></script>
 <script src="js/filesync.js"></script>
+<script src="js/snapshots.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

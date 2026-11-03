@@ -58,6 +58,7 @@
     if (!dirty) return Promise.resolve();
     dirty = false;
     return BookStorage.save(state).then(function () {
+      if (Snapshots.ready && Date.now() - Snapshots.lastTime() > AUTO_SNAP_MS) takeSnap('auto');
       if (FileSync.handle && fileOk) scheduleFileWrite();
       else setSaveState('자동 저장됨(브라우저) · ' + hhmm());
     }).catch(function (e) {
@@ -133,6 +134,7 @@
     });
   }
   function replaceState(data) {
+    takeSnap('before', '다른 원고(파일·백업)로 바꾸기 전');
     data = JSON.parse(JSON.stringify(data));
     delete data.app; delete data.exported; delete data.format;
     state = normalize(data);
@@ -326,7 +328,8 @@
     var c = current();
     var label = c.kind === 'memo' ? '메모' : '장';
     var n = c.text.length;
-    if (n && !confirm("'" + (c.title || '제목 없음') + "' " + label + '을(를) 지울까요? (' + n.toLocaleString() + '자)\n지우면 되살릴 수 없어요. 필요하면 먼저 내보내기를 해 두세요.')) return;
+    if (n && !confirm("'" + (c.title || '제목 없음') + "' " + label + '을(를) 지울까요? (' + n.toLocaleString() + '자)\n지운 뒤에도 \'버전 기록\'에서 되살릴 수 있어요.')) return;
+    if (n) takeSnap('before', "'" + (c.title || '제목 없음') + "' " + label + ' 지우기 전');
     var idx = state.chapters.indexOf(c);
     state.chapters.splice(idx, 1);
     if (!state.chapters.length) state.chapters.push(newDoc('chapter', '1장'));
@@ -722,11 +725,8 @@
       if (!data || !Array.isArray(data.chapters)) throw new Error('이 도구의 백업 파일이 아니에요.');
       var n = data.chapters.length;
       if (!confirm('백업(' + (data.exported ? new Date(data.exported).toLocaleString('ko-KR') : '날짜 모름') + ', 장·메모 ' + n + '개)으로 바꿀까요?\n지금 이 브라우저에 있는 원고는 백업 내용으로 대체돼요.')) return;
-      delete data.app; delete data.exported;
-      state = normalize(data);
-      dirty = true; saveNow();
       $('#importDlg').close();
-      boot();
+      replaceState(data);
       toast('백업으로 되살렸어요.');
     }).catch(function (err) { alert('백업 파일을 읽지 못했어요.\n' + (err && err.message || err)); });
   });
@@ -802,6 +802,213 @@
     toast('예문을 메모로 넣었어요. 오른쪽 지적을 눌러 보세요. 다 보면 ‘삭제’로 지우세요.', 5000);
   };
 
+  // ── 버전 기록 ──
+  var AUTO_SNAP_MS = 30 * 60 * 1000;
+  function takeSnap(reason, label) {
+    if (!Snapshots.ready) return Promise.resolve(null);
+    return Snapshots.take(state, reason, label).catch(function (e) {
+      console.warn('버전 기록 실패', e);
+      return null;
+    });
+  }
+  var hist = { id: null, snap: null, chId: null };
+  function fmtTime(t) { return new Date(t).toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' }); }
+  function fmtDay(t) {
+    var d = new Date(t), now = new Date();
+    var day = function (x) { return new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime(); };
+    var diff = Math.round((day(now) - day(d)) / 864e5);
+    if (diff === 0) return '오늘';
+    if (diff === 1) return '어제';
+    return d.toLocaleDateString('ko-KR', { year: d.getFullYear() === now.getFullYear() ? undefined : 'numeric', month: 'long', day: 'numeric', weekday: 'short' });
+  }
+  function bookChars() { return chapters().reduce(function (n, c) { return n + c.text.replace(/\n/g, '').length; }, 0); }
+
+  function openHistory() {
+    if (!Snapshots.ready) { alert('이 브라우저에서는 버전 기록을 쓸 수 없어요(브라우저 저장소를 쓸 수 없음).'); return; }
+    saveNow();
+    hist.id = null;
+    $('#snapName').value = '';
+    renderSnapList();
+    if (Snapshots.index.length) selectSnap(Snapshots.index[0].id);
+    else $('#snapDetail').innerHTML = '<div class="empty">아직 기록이 없어요. ‘지금 버전 저장’을 눌러 첫 기록을 남겨 보세요.</div>';
+    if (!$('#historyDlg').open) $('#historyDlg').showModal();
+  }
+  $('#openHistory').onclick = openHistory;
+
+  function renderSnapList() {
+    var html = '', lastDay = null, ix = Snapshots.index;
+    ix.forEach(function (m, i) {
+      var day = fmtDay(m.time);
+      if (day !== lastDay) { html += '<div class="snap-day">' + esc(day) + '</div>'; lastDay = day; }
+      var older = ix[i + 1], delta = older ? m.chars - older.chars : null;
+      html += '<button type="button" class="snap-item" data-id="' + m.id + '" aria-current="' + (m.id === hist.id) + '">' +
+        '<span class="c">' + m.chars.toLocaleString() + '자' + (delta ? ' (' + (delta > 0 ? '+' : '') + delta.toLocaleString() + ')' : '') + '</span>' +
+        '<span class="t">' + fmtTime(m.time) + '</span> <span class="r">' + (m.reason === 'manual' ? '★ ' : '') + Snapshots.REASONS[m.reason] + '</span>' +
+        (m.label ? '<span class="l">' + esc(m.label) + '</span>' : '') + '</button>';
+    });
+    $('#snapList').innerHTML = html || '<div class="empty">기록 없음</div>';
+  }
+  $('#snapList').addEventListener('click', function (e) {
+    var b = e.target.closest('.snap-item');
+    if (b) selectSnap(b.getAttribute('data-id'));
+  });
+
+  function selectSnap(id) {
+    hist.id = id;
+    $$('#snapList .snap-item').forEach(function (b) { b.setAttribute('aria-current', b.getAttribute('data-id') === id); });
+    $('#snapDetail').innerHTML = '<div class="empty">불러오는 중…</div>';
+    Snapshots.get(id).then(function (snap) {
+      if (hist.id !== id) return;
+      if (!snap) { $('#snapDetail').innerHTML = '<div class="empty">이 기록을 읽지 못했어요.</div>'; return; }
+      hist.snap = snap;
+      // 보여 줄 장: 지금 보던 장이 바뀌었으면 그 장 → 아니면 바뀐(지운) 장 → 지금 보던 장 → 첫 장
+      var ids = snap.chapters.map(function (c) { return c.id; });
+      var curIn = ids.indexOf(state.currentId) >= 0;
+      var curChanged = curIn && isChanged(snap.chapters[ids.indexOf(state.currentId)]);
+      hist.chId = curChanged ? state.currentId : (firstChanged(snap) || (curIn ? state.currentId : ids[0]));
+      renderSnapDetail();
+    });
+  }
+  function nowDoc(id) { return state.chapters.filter(function (c) { return c.id === id; })[0]; }
+  function isChanged(x) { var n = nowDoc(x.id); return !n || n.text !== x.text || n.title !== x.title; }
+  function firstChanged(snap) {
+    var c = snap.chapters.filter(isChanged)[0];
+    return c && c.id;
+  }
+
+  function renderSnapDetail() {
+    var snap = hist.snap, meta = Snapshots.index.filter(function (m) { return m.id === hist.id; })[0];
+    if (!snap || !meta) return;
+    var ch = snap.chapters.filter(function (c) { return c.id === hist.chId; })[0];
+    var cur = ch && nowDoc(ch.id);
+    var opts = snap.chapters.map(function (c) {
+      var n = nowDoc(c.id);
+      var mark = !n ? ' — 지금은 없음' : (n.text !== c.text || n.title !== c.title ? ' — 바뀜' : '');
+      return '<option value="' + c.id + '"' + (c.id === hist.chId ? ' selected' : '') + '>' + (c.kind === 'memo' ? '[메모] ' : '') + esc(c.title || '(제목 없음)') + mark + '</option>';
+    }).join('');
+    var newer = chapters().concat(memos()).filter(function (c) { return snap.chapters.every(function (x) { return x.id !== c.id; }); });
+    var html = '<div><b>' + new Date(meta.time).toLocaleString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short', hour: 'numeric', minute: '2-digit' }) + '</b> · ' +
+      Snapshots.REASONS[meta.reason] + (meta.label ? ' · ' + esc(meta.label) : '') +
+      '<div class="hint">그때 원고 ' + meta.chars.toLocaleString() + '자, 장 ' + meta.chapters + '개 (지금 ' + bookChars().toLocaleString() + '자, 장 ' + chapters().length + '개)</div></div>';
+    html += '<label>비교할 장 <select id="snapCh">' + opts + '</select></label>';
+    if (newer.length) html += '<div class="hint">이 기록 뒤에 새로 만든 장·메모: ' + newer.map(function (c) { return esc(c.title || '(제목 없음)'); }).join(', ') + '</div>';
+
+    var d = ch ? Snapshots.diff(ch.text, cur ? cur.text : '') : null;
+    html += '<div class="snap-actions">' +
+      (ch ? '<button type="button" class="primary" data-sa="restoreCh"' + (cur && !d.changed && cur.title === ch.title ? ' disabled' : '') + '>' + (cur ? '이 장을 이 버전으로 되돌리기' : '이 장 되살리기') + '</button>' : '') +
+      '<button type="button" data-sa="restoreAll">원고 전체를 이 버전으로</button>' +
+      (ch ? '<button type="button" data-sa="copy">이 장 글 복사</button>' : '') +
+      '<button type="button" data-sa="rename">' + (meta.reason === 'manual' ? '이름 바꾸기' : '이름 붙여 보관') + '</button>' +
+      '<button type="button" class="danger" data-sa="delete">이 기록 지우기</button></div>';
+
+    if (ch) {
+      if (!cur) {
+        html += '<p class="hint">이 장(메모)은 지금 원고에 없어요(지웠거나 다른 원고로 바꿨어요). ‘이 장 되살리기’를 누르면 다시 넣어요.</p>' +
+          '<div class="diff">' + ch.text.split('\n').map(function (p) { return '<p>' + (esc(p) || '&nbsp;') + '</p>'; }).join('') + '</div>';
+      } else if (!d.changed) {
+        html += '<p class="hint">이 장의 글은 지금과 똑같아요.' + (cur.title !== ch.title ? " (제목만 달라요: 그때 '" + esc(ch.title) + "')" : '') + '</p>';
+      } else {
+        html += '<div class="diff-legend">그때 → 지금: <span class="d-del">지운 글</span> <span class="d-add">새로 쓴 글</span> · 더한 글 ' + d.added.toLocaleString() + '자, 지운 글 ' + d.removed.toLocaleString() + '자 (공백 제외)</div>' +
+          '<div class="diff">' + renderDiff(d.ops) + '</div>';
+      }
+    }
+    $('#snapDetail').innerHTML = html;
+    $('#snapCh').onchange = function () { hist.chId = this.value; renderSnapDetail(); };
+  }
+  // 바뀐 문단과 그 앞뒤 한 문단만 보여 주고, 나머지 같은 문단은 '⋯ 같은 문단 N개 ⋯'로 접는다
+  function renderDiff(ops) {
+    var CTX = 1, show = ops.map(function () { return false; });
+    ops.forEach(function (o, i) {
+      if (o.type === 'same') return;
+      for (var k = Math.max(0, i - CTX); k <= Math.min(ops.length - 1, i + CTX); k++) show[k] = true;
+    });
+    var out = [], hidden = 0;
+    function flush() { if (hidden) out.push('<p class="d-skip">⋯ 같은 문단 ' + hidden + '개 ⋯</p>'); hidden = 0; }
+    ops.forEach(function (o, i) {
+      if (!show[i]) { hidden++; return; }
+      flush();
+      if (o.type === 'same') out.push('<p>' + (esc(o.text) || '&nbsp;') + '</p>');
+      else if (o.type === 'del') out.push('<p class="d-del">' + (esc(o.text) || '(빈 줄)') + '</p>');
+      else if (o.type === 'add') out.push('<p class="d-add">' + (esc(o.text) || '(빈 줄)') + '</p>');
+      else out.push('<p>' + o.parts.map(function (p) {
+        return p.type === 'same' ? esc(p.text) : '<span class="d-' + p.type + '">' + esc(p.text) + '</span>';
+      }).join('') + '</p>');
+    });
+    flush();
+    return out.join('');
+  }
+
+  $('#snapDetail').addEventListener('click', function (e) {
+    var b = e.target.closest('[data-sa]'); if (!b) return;
+    var act = b.getAttribute('data-sa'), snap = hist.snap;
+    var meta = Snapshots.index.filter(function (m) { return m.id === hist.id; })[0];
+    var ch = snap && snap.chapters.filter(function (c) { return c.id === hist.chId; })[0];
+    var when = meta ? fmtDay(meta.time) + ' ' + fmtTime(meta.time) : '';
+    if (act === 'restoreCh' && ch) {
+      var cur = nowDoc(ch.id);
+      if (!confirm("'" + (ch.title || '제목 없음') + "'을(를) " + when + ' 버전으로 ' + (cur ? '되돌릴까요?' : '되살릴까요?') + '\n지금 글은 버전 기록에 먼저 남겨 둬서, 마음이 바뀌면 다시 돌아올 수 있어요.')) return;
+      takeSnap('before', "'" + (ch.title || '제목 없음') + "' 되돌리기 전").then(function () {
+        if (cur) { cur.text = ch.text; cur.title = ch.title; cur.updated = Date.now(); }
+        else {
+          var copy = newDoc(ch.kind, ch.title, ch.text); copy.id = ch.id;
+          var lastIdx = -1;
+          state.chapters.forEach(function (x, i) { if (x.kind === ch.kind) lastIdx = i; });
+          state.chapters.splice(lastIdx + 1, 0, copy);
+        }
+        markDirty();
+        openDoc(ch.id);
+        saveNow();
+        renderSnapList(); selectSnap(hist.id);
+        toast("'" + (ch.title || '제목 없음') + "'을(를) " + when + ' 버전으로 ' + (cur ? '되돌렸어요.' : '되살렸어요.'));
+      });
+    }
+    if (act === 'restoreAll') {
+      var gone = chapters().concat(memos()).filter(function (c) { return snap.chapters.every(function (x) { return x.id !== c.id; }); });
+      if (!confirm('원고 전체(모든 장·메모)를 ' + when + ' 버전으로 되돌릴까요?' +
+        (gone.length ? '\n그 뒤에 새로 만든 ' + gone.length + '개(' + gone.map(function (c) { return c.title; }).slice(0, 3).join(', ') + (gone.length > 3 ? ' 등' : '') + ')는 빠져요.' : '') +
+        '\n표기 사전과 설정은 그대로예요. 지금 원고는 버전 기록에 먼저 남겨 둬요.')) return;
+      takeSnap('before', '원고 전체 되돌리기 전').then(function () {
+        state.title = snap.title;
+        state.chapters = snap.chapters.map(function (c) { var d = newDoc(c.kind, c.title, c.text); d.id = c.id; return d; });
+        if (!state.chapters.length) state.chapters.push(newDoc('chapter', '1장'));
+        if (!nowDoc(state.currentId)) state.currentId = state.chapters[0].id;
+        $('#bookTitle').value = state.title || '';
+        markDirty();
+        openDoc(state.currentId);
+        saveNow();
+        renderSnapList(); selectSnap(hist.id);
+        toast('원고 전체를 ' + when + ' 버전으로 되돌렸어요.');
+      });
+    }
+    if (act === 'copy' && ch) {
+      copyText(ch.text).then(function () { toast('이 버전의 글을 복사했어요. 원하는 곳에 붙여 넣으세요.'); }, function () { prompt('아래 글을 복사하세요.', ch.text); });
+    }
+    if (act === 'rename' && meta) {
+      var name = prompt('이 기록의 이름 (이름을 붙인 기록은 자동 기록보다 오래 보관돼요)', meta.label || '');
+      if (name === null) return;
+      Snapshots.rename(meta.id, name.trim()).then(function () { renderSnapList(); renderSnapDetail(); });
+    }
+    if (act === 'delete' && meta) {
+      if (!confirm(when + ' 기록을 지울까요? 원고에는 영향이 없어요.')) return;
+      Snapshots.remove(meta.id).then(function () {
+        hist.id = null; renderSnapList();
+        if (Snapshots.index.length) selectSnap(Snapshots.index[0].id);
+        else $('#snapDetail').innerHTML = '<div class="empty">기록이 없어요.</div>';
+      });
+    }
+  });
+  $('#snapNow').onclick = function () {
+    saveNow();
+    var label = $('#snapName').value.trim();
+    Snapshots.take(state, 'manual', label || '').then(function (m) {
+      $('#snapName').value = '';
+      renderSnapList();
+      if (m) selectSnap(m.id);
+      toast('지금 버전을 저장했어요.');
+    }).catch(function (e) { alert('저장하지 못했어요.\n' + (e && e.message || e)); });
+  };
+  $('#snapName').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('#snapNow').click(); } });
+
   // ── 시작 ──
   function boot() {
     $('#bookTitle').value = state.title || '';
@@ -825,7 +1032,12 @@
     boot();
     if (!data) { saveNow(); $('#helpDlg').showModal(); }
     BookStorage.persist();
-    return FileSync.restore().then(function (perm) {
+    return Snapshots.load().then(function () {
+      var hasText = state.chapters.some(function (c) { return c.text.trim(); });
+      return hasText ? takeSnap('open', '') : null;
+    }).then(function () {
+      return FileSync.restore();
+    }).then(function (perm) {
       if (perm === 'granted') return syncWithFile();
       if (perm === 'crashed') {
         showBanner('지난번에 원고 파일을 다시 연결하다가 문제가 생겨서 이번에는 건너뛰었어요. 원고는 브라우저에 그대로 있어요. <b>원고 파일 → 이미 있는 원고 파일 열기</b>로 다시 연결해 주세요.', true);
@@ -848,5 +1060,5 @@
   });
 
   // 시험용 (자동 테스트에서 사용)
-  window.__bookEditor = { get state() { return state; }, get issues() { return issues; }, runCheck: runCheck, saveNow: saveNow, writeFileNow: writeFileNow, get fileOk() { return fileOk; } };
+  window.__bookEditor = { get state() { return state; }, get issues() { return issues; }, runCheck: runCheck, saveNow: saveNow, takeSnap: takeSnap, writeFileNow: writeFileNow, get fileOk() { return fileOk; } };
 })();
